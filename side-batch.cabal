@@ -23,6 +23,7 @@ library
                      , binary
                      , syb
                      , containers
+                     , process
   default-language:    Haskell2010
 
 executable side-batch-exe
@@ -37,6 +38,8 @@ executable side-batch-exe
                      , binary
                      , syb
                      , containers
+                     , process
+                     , text
   default-language:    Haskell2010
 
 test-suite side-batch-test

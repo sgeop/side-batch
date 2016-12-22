@@ -6,17 +6,20 @@
 
 module Lib
     ( TaskDef
-    , Context
+    , Context (..)
     , TaskList
     , TaskResult (..)
     , makeTask
     , defTask
+    , defShellTask
     , distMain
     ) where
 
 import System.Environment (getArgs)
 import Control.Monad (forM_)
+import Control.Arrow (first)
 import Control.Concurrent
+import Control.Exception as Exp
 import Control.Distributed.Process
 import Control.Distributed.Process.Backend.SimpleLocalnet
 import Control.Distributed.Process.Node (initRemoteTable)
@@ -25,6 +28,7 @@ import Data.Set as Set
 import Data.Binary
 import Data.Typeable
 import GHC.Generics
+import System.Process (callCommand)
 
 data TaskResult = Failure | Success deriving (Show, Generic, Typeable)
 
@@ -73,8 +77,18 @@ defTask taskId' run' dependsOn' = TaskDef { taskId = taskId'
                                           , dependsOn = dependsOn'
                                           }
 
+
+defShellTask :: String -> (Context -> String) -> [TaskDef] -> TaskDef
+defShellTask taskId' cmd = defTask taskId' (runCmd . cmd)
+  where
+    runCmd a = (callCommand a >> return Success) `Exp.catch` handle
+
+    handle :: IOException -> IO TaskResult
+    handle = const $ return Failure
+
+
 getClosures :: TaskList -> Map String (Context -> (Closure (Process ())))
-getClosures defs = Map.fromList $ Prelude.map (\(a, b) -> (taskId a, b)) defs
+getClosures defs = Map.fromList $ Prelude.map (first taskId) defs
 
 
 stateProc :: (Set String) -> Process ()

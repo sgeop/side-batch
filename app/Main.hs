@@ -11,6 +11,7 @@ module Main where
 import Control.Concurrent
 import Control.Distributed.Process
 import Control.Distributed.Process.Closure
+import Text.Printf
 
 import Lib
 
@@ -23,14 +24,14 @@ task1 = makeTask task1Def
 
 
 task2Def :: TaskDef
-task2Def = defTask "task2" (\ctx -> print ctx >> return Failure) [task1Def]
+task2Def = defShellTask "task2" (const "ls not-a-file") [task1Def]
 
 task2 :: Context -> Process ()
 task2 = makeTask task2Def
 
 
 task3Def :: TaskDef
-task3Def = defTask "task3" (const $ putStrLn "hello" >> return Success) [task1Def]
+task3Def = defShellTask "task3" (printf "echo %s" . show . sender) [task1Def]
 
 task3 :: Context -> Process ()
 task3 = makeTask task3Def
