@@ -31,7 +31,7 @@ task2 = makeTask task2Def
 
 
 task3Def :: TaskDef
-task3Def = defShellTask "task3" (printf "echo %s" . show . sender) [task1Def]
+task3Def = defShellTask "task3" (printf "echo %s" . show . recv) [task1Def]
 
 task3 :: Context -> Process ()
 task3 = makeTask task3Def

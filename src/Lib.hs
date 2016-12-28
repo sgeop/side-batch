@@ -30,31 +30,47 @@ import Data.Typeable
 import GHC.Generics
 import System.Process (callCommand)
 
-data TaskResult = Failure | Success deriving (Show, Generic, Typeable)
 
-data Context = Context { sender :: ProcessId
-                       , env :: String
-                       , date :: String
-                       } deriving (Show, Generic, Typeable)
-
-
-data TaskDef = TaskDef { taskId :: String
-                       , run :: Context -> IO TaskResult
-                       , dependsOn :: [TaskDef]
-                       }
+data TaskResult
+  = Failure
+  | Success
+  deriving (Show, Generic, Typeable)
 
 instance Binary TaskResult
+
+
+data Env
+  = Production
+  | Development
+  | Test
+  deriving (Show, Generic, Typeable)
+
+
+data Context = Context
+  { recv :: ProcessId
+  , env :: String
+  , date :: String
+  } deriving (Show, Generic, Typeable)
+
 instance Binary Context
 
-type TaskState = MVar (Set.Set String)
 
-type TaskList = [(TaskDef, Context -> Closure (Process()))]
+data TaskDef = TaskDef
+  { taskId :: String
+  , run :: Context -> IO TaskResult
+  , dependsOn :: [TaskDef]
+  }
 
-data StateReq = Finish (String, TaskResult)
-              | CheckDeps (ProcessId, [String])
-              deriving (Show, Generic, Typeable)
+
+data StateReq
+  = Finish (String, TaskResult)
+  | CheckDeps (ProcessId, [String])
+  deriving (Show, Generic, Typeable)
 
 instance Binary StateReq
+
+
+type TaskList = [(TaskDef, Context -> Closure (Process()))]
 
 
 taskDepIds :: TaskDef -> [String]
@@ -65,43 +81,44 @@ makeTask :: TaskDef -> (Context -> Process ())
 makeTask def ctx = do
   say $ "starting task: " ++ show (taskId def)
   result <- liftIO $ run def ctx
-  say $ show (sender ctx) ++ "finished with: " ++ show result
+  say $ show (recv ctx) ++ "finished with: " ++ show result
   let msg = Finish (taskId def, result)
-  say $ "sending " ++ (show $ sender ctx) ++ " " ++ (show msg)
-  send (sender ctx) msg
+  say $ "sending " ++ show (recv ctx) ++ " " ++ show msg
+  send (recv ctx) msg
 
 
 defTask :: String -> (Context -> IO TaskResult) -> [TaskDef] -> TaskDef
-defTask taskId' run' dependsOn' = TaskDef { taskId = taskId'
-                                          , run = run'
-                                          , dependsOn = dependsOn'
-                                          }
+defTask taskId' run' dependsOn' =
+  TaskDef { taskId = taskId'
+          , run = run'
+          , dependsOn = dependsOn'
+          }
 
 
 defShellTask :: String -> (Context -> String) -> [TaskDef] -> TaskDef
 defShellTask taskId' cmd = defTask taskId' (runCmd . cmd)
   where
-    runCmd a = (callCommand a >> return Success) `Exp.catch` handle
+    runCmd a = (callCommand a >> return Success) `Exp.catch` failure
 
-    handle :: IOException -> IO TaskResult
-    handle = const $ return Failure
+    failure :: IOException -> IO TaskResult
+    failure = const $ return Failure
 
 
-getClosures :: TaskList -> Map String (Context -> (Closure (Process ())))
+getClosures :: TaskList -> Map String (Context -> Closure (Process ()))
 getClosures defs = Map.fromList $ Prelude.map (first taskId) defs
 
 
-stateProc :: (Set String) -> Process ()
+stateProc :: Set String -> Process ()
 stateProc state = do
   say "starting state proc"
   (req :: StateReq) <- expect
   case req of
-    Finish (tid, result) -> do
-      say $ (show tid) ++ " finished"
+    Finish (tid, _) -> do
+      say $ show tid ++ " finished"
       stateProc $ Set.insert tid state
     CheckDeps (pid, deps) -> do
       send pid (all (`Set.member` state) deps)
-      say $ (show deps) ++ " not in " ++ (show state)
+      say $ show deps ++ " not in " ++ show state
       stateProc state
 
 
@@ -112,7 +129,7 @@ taskProc masterPid statePid def = do
   (isReady :: Bool) <- expect
   if isReady
   then send masterPid (taskId def)
-  else do say $ "deps not met for: " ++ (taskId def)
+  else do say $ "deps not met for: " ++ taskId def
           liftIO $ threadDelay 1000000
           taskProc masterPid statePid def
 
@@ -123,8 +140,8 @@ master tlist env' date' slaves = do
   mypid <- getSelfPid
   statePid <- spawnLocal $ stateProc Set.empty
   let closures = getClosures tlist
-  let context = Context { sender = statePid, env = env', date = date'}
-  forM_ tlist (\def -> spawnLocal $ taskProc mypid statePid (fst def))
+  let context = Context { recv = statePid, env = env', date = date'}
+  forM_ tlist (spawnLocal . taskProc mypid statePid . fst)
   forM_ (cycle slaves) (\node -> do
     (tid :: String) <- expect
     spawn node $ (closures ! tid) context)
@@ -135,10 +152,16 @@ distMain tlist rtable = do
   args <- getArgs
   let rt = rtable initRemoteTable
   case args of
-    ["master", host, port, env, date] -> do
+
+    ["master", host, port, env', date'] -> do
       backend <- initializeBackend host port rt
-      startMaster backend (master tlist env date)
+      startMaster backend (master tlist env' date')
 
     ["slave", host, port] -> do
       backend <- initializeBackend host port rt
       startSlave backend
+
+    _ -> print $ "Incorrect options. Input either\n"   ++
+                 "master <host> <port> <env> <date>\n" ++
+                 "or\n"                                ++
+                 "stave <host> <port>"
