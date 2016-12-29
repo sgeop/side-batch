@@ -5,10 +5,12 @@
 {-# Language RankNTypes #-}
 
 module Lib
-    ( TaskDef
+    ( TaskId
+    , TaskDef
     , Context (..)
     , TaskList
     , TaskResult (..)
+    , StateReq (..)
     , makeTask
     , defTask
     , defShellTask
@@ -25,7 +27,7 @@ import Control.Distributed.Process.Backend.SimpleLocalnet
 import Control.Distributed.Process.Node (initRemoteTable)
 import Data.Map.Strict as Map
 import Data.Set as Set
-import Data.Binary
+import Data.Binary hiding (get)
 import Data.Typeable
 import GHC.Generics
 import System.Process (callCommand)
@@ -55,16 +57,22 @@ data Context = Context
 instance Binary Context
 
 
+newtype TaskId = TaskId String
+  deriving (Show, Eq, Ord, Generic, Typeable)
+
+instance Binary TaskId
+
+
 data TaskDef = TaskDef
-  { taskId :: String
+  { taskId :: TaskId
   , run :: Context -> IO TaskResult
   , dependsOn :: [TaskDef]
   }
 
 
 data StateReq
-  = Finish (String, TaskResult)
-  | CheckDeps (ProcessId, [String])
+  = Finish (TaskId, TaskResult)
+  | CheckDeps (ProcessId, [TaskId])
   deriving (Show, Generic, Typeable)
 
 instance Binary StateReq
@@ -73,7 +81,7 @@ instance Binary StateReq
 type TaskList = [(TaskDef, Context -> Closure (Process()))]
 
 
-taskDepIds :: TaskDef -> [String]
+taskDepIds :: TaskDef -> [TaskId]
 taskDepIds def = fmap taskId (dependsOn def)
 
 
@@ -89,7 +97,7 @@ makeTask def ctx = do
 
 defTask :: String -> (Context -> IO TaskResult) -> [TaskDef] -> TaskDef
 defTask taskId' run' dependsOn' =
-  TaskDef { taskId = taskId'
+  TaskDef { taskId = TaskId taskId'
           , run = run'
           , dependsOn = dependsOn'
           }
@@ -104,11 +112,12 @@ defShellTask taskId' cmd = defTask taskId' (runCmd . cmd)
     failure = const $ return Failure
 
 
-getClosures :: TaskList -> Map String (Context -> Closure (Process ()))
+getClosures :: TaskList -> Map TaskId (Context -> Closure (Process ()))
 getClosures defs = Map.fromList $ Prelude.map (first taskId) defs
 
 
-stateProc :: Set String -> Process ()
+
+stateProc :: Set TaskId -> Process ()
 stateProc state = do
   say "starting state proc"
   (req :: StateReq) <- expect
@@ -129,7 +138,7 @@ taskProc masterPid statePid def = do
   (isReady :: Bool) <- expect
   if isReady
   then send masterPid (taskId def)
-  else do say $ "deps not met for: " ++ taskId def
+  else do say $ "deps not met for: " ++ show (taskId def)
           liftIO $ threadDelay 1000000
           taskProc masterPid statePid def
 
@@ -143,7 +152,7 @@ master tlist env' date' slaves = do
   let context = Context { recv = statePid, env = env', date = date'}
   forM_ tlist (spawnLocal . taskProc mypid statePid . fst)
   forM_ (cycle slaves) (\node -> do
-    (tid :: String) <- expect
+    (tid :: TaskId) <- expect
     spawn node $ (closures ! tid) context)
 
 
