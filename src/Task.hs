@@ -17,6 +17,20 @@ newtype TaskId = TaskId String
 instance Binary TaskId
 
 
+data TaskDef = TaskDef
+  { taskId :: TaskId
+  , dependsOn :: [TaskDef]
+  } deriving (Show, Generic, Typeable)
+
+instance Binary TaskDef
+
+
+data Task = Task
+  { run :: Context -> IO TaskResult
+  , def :: TaskDef
+  }
+
+
 data TaskResult
   = Failure
   | Success
@@ -34,31 +48,27 @@ data Context = Context
 instance Binary Context
 
 
-data TaskDef = TaskDef
-  { taskId :: TaskId
-  , run :: Context -> IO TaskResult
-  , dependsOn :: [TaskDef]
+type TaskList = [(TaskDef, Context -> Closure (Process()))]
+
+
+taskDepIds :: TaskDef -> [TaskId]
+taskDepIds def' = fmap taskId (dependsOn def')
+
+
+mkTask :: String -> [TaskDef] -> (Context -> IO TaskResult) -> Task
+mkTask taskId' dependsOn' run' = Task
+  { run = run'
+  , def = TaskDef
+    { taskId = TaskId taskId'
+    , dependsOn = dependsOn'
+    }
   }
 
 
-type TaskList = [(TaskDef, Context -> Closure (Process()))]
-
-taskDepIds :: TaskDef -> [TaskId]
-taskDepIds def = fmap taskId (dependsOn def)
-
-
-defTask :: String -> (Context -> IO TaskResult) -> [TaskDef] -> TaskDef
-defTask taskId' run' dependsOn' =
-  TaskDef { taskId = TaskId taskId'
-          , run = run'
-          , dependsOn = dependsOn'
-          }
-
-
-defShellTask :: String -> (Context -> String) -> [TaskDef] -> TaskDef
-defShellTask taskId' cmd = defTask taskId' (runCmd . cmd)
-  where
-    runCmd a = (callCommand a >> return Success) `Exp.catch` failure
-
-    failure :: IOException -> IO TaskResult
-    failure = const $ return Failure
+-- defShellTask :: String -> (Context -> String) -> [TaskDef] -> TaskDef
+-- defShellTask taskId' cmd = defTask taskId' (runCmd . cmd)
+--   where
+--     runCmd a = (callCommand a >> return Success) `Exp.catch` failure
+--
+--     failure :: IOException -> IO TaskResult
+--     failure = const $ return Failure

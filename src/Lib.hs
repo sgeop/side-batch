@@ -5,15 +5,15 @@
 {-# Language RankNTypes #-}
 
 module Lib
-    ( TaskId
+    ( Task (..)
+    , TaskId
     , TaskDef
     , Context (..)
     , TaskList
     , TaskResult (..)
     , StateReq (..)
-    , makeTask
-    , defTask
-    , defShellTask
+    , mkTask
+    , runTask
     , distMain
     ) where
 
@@ -45,26 +45,26 @@ getClosures :: TaskList -> Map TaskId (Context -> Closure (Process ()))
 getClosures defs = Map.fromList $ Prelude.map (first taskId) defs
 
 
-makeTask :: TaskDef -> (Context -> Process ())
-makeTask def ctx = do
-  say $ "starting task: " ++ show (taskId def)
-  result <- liftIO $ run def ctx
+runTask :: Task -> (Context -> Process ())
+runTask (Task run' def') ctx = do
+  say $ "starting task: " ++ show (taskId def')
+  result <- liftIO $ run' ctx
   say $ show (recv ctx) ++ "finished with: " ++ show result
-  let msg = Finish (taskId def, result)
+  let msg = Finish (taskId def', result)
   say $ "sending " ++ show (recv ctx) ++ " " ++ show msg
   send (recv ctx) msg
 
 
 taskProc :: ProcessId -> ProcessId -> TaskDef -> Process ()
-taskProc masterPid statePid def = do
+taskProc masterPid statePid def' = do
   pid <- getSelfPid
-  send statePid (CheckDeps (pid, taskDepIds def))
+  send statePid (CheckDeps (pid, taskDepIds def'))
   (isReady :: Bool) <- expect
   if isReady
-  then send masterPid (taskId def)
-  else do say $ "deps not met for: " ++ show (taskId def)
+  then send masterPid (taskId def')
+  else do say $ "deps not met for: " ++ show (taskId def')
           liftIO $ threadDelay 1000000
-          taskProc masterPid statePid def
+          taskProc masterPid statePid def'
 
 
 master :: TaskList -> String -> String -> [NodeId] -> Process ()
