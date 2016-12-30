@@ -21,25 +21,16 @@ import System.Environment (getArgs)
 import Control.Monad (forM_)
 import Control.Arrow (first)
 import Control.Concurrent
-import Control.Exception as Exp
 import Control.Distributed.Process
 import Control.Distributed.Process.Backend.SimpleLocalnet
 import Control.Distributed.Process.Node (initRemoteTable)
 import Data.Map.Strict as Map
-import Data.Set as Set
-import Data.Binary hiding (get)
+import Data.Binary (Binary)
 import Data.Typeable
 import GHC.Generics
-import System.Process (callCommand)
 
-
-data TaskResult
-  = Failure
-  | Success
-  deriving (Show, Generic, Typeable)
-
-instance Binary TaskResult
-
+import Task
+import StateManager
 
 data Env
   = Production
@@ -47,42 +38,11 @@ data Env
   | Test
   deriving (Show, Generic, Typeable)
 
-
-data Context = Context
-  { recv :: ProcessId
-  , env :: String
-  , date :: String
-  } deriving (Show, Generic, Typeable)
-
-instance Binary Context
+instance Binary Env
 
 
-newtype TaskId = TaskId String
-  deriving (Show, Eq, Ord, Generic, Typeable)
-
-instance Binary TaskId
-
-
-data TaskDef = TaskDef
-  { taskId :: TaskId
-  , run :: Context -> IO TaskResult
-  , dependsOn :: [TaskDef]
-  }
-
-
-data StateReq
-  = Finish (TaskId, TaskResult)
-  | CheckDeps (ProcessId, [TaskId])
-  deriving (Show, Generic, Typeable)
-
-instance Binary StateReq
-
-
-type TaskList = [(TaskDef, Context -> Closure (Process()))]
-
-
-taskDepIds :: TaskDef -> [TaskId]
-taskDepIds def = fmap taskId (dependsOn def)
+getClosures :: TaskList -> Map TaskId (Context -> Closure (Process ()))
+getClosures defs = Map.fromList $ Prelude.map (first taskId) defs
 
 
 makeTask :: TaskDef -> (Context -> Process ())
@@ -93,42 +53,6 @@ makeTask def ctx = do
   let msg = Finish (taskId def, result)
   say $ "sending " ++ show (recv ctx) ++ " " ++ show msg
   send (recv ctx) msg
-
-
-defTask :: String -> (Context -> IO TaskResult) -> [TaskDef] -> TaskDef
-defTask taskId' run' dependsOn' =
-  TaskDef { taskId = TaskId taskId'
-          , run = run'
-          , dependsOn = dependsOn'
-          }
-
-
-defShellTask :: String -> (Context -> String) -> [TaskDef] -> TaskDef
-defShellTask taskId' cmd = defTask taskId' (runCmd . cmd)
-  where
-    runCmd a = (callCommand a >> return Success) `Exp.catch` failure
-
-    failure :: IOException -> IO TaskResult
-    failure = const $ return Failure
-
-
-getClosures :: TaskList -> Map TaskId (Context -> Closure (Process ()))
-getClosures defs = Map.fromList $ Prelude.map (first taskId) defs
-
-
-
-stateProc :: Set TaskId -> Process ()
-stateProc state = do
-  say "starting state proc"
-  (req :: StateReq) <- expect
-  case req of
-    Finish (tid, _) -> do
-      say $ show tid ++ " finished"
-      stateProc $ Set.insert tid state
-    CheckDeps (pid, deps) -> do
-      send pid (all (`Set.member` state) deps)
-      say $ show deps ++ " not in " ++ show state
-      stateProc state
 
 
 taskProc :: ProcessId -> ProcessId -> TaskDef -> Process ()
@@ -147,7 +71,7 @@ master :: TaskList -> String -> String -> [NodeId] -> Process ()
 master tlist env' date' slaves = do
   liftIO . putStrLn $ "Slaves: " ++ show slaves
   mypid <- getSelfPid
-  statePid <- spawnLocal $ stateProc Set.empty
+  statePid <- spawnLocal stateManager
   let closures = getClosures tlist
   let context = Context { recv = statePid, env = env', date = date'}
   forM_ tlist (spawnLocal . taskProc mypid statePid . fst)
